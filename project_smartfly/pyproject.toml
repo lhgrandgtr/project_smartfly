@@ -1,0 +1,10 @@
+[project]
+name = "project-smartfly"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "opencv-python>=4.11.0.86",
+    "semantic-kernel>=1.29.0",
+]
