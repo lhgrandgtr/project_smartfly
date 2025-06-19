@@ -10,74 +10,71 @@ class RemoteController:
         logger.info("Initializing RemoteController ...")
         self.bluetooth_port = bluetooth_port
         self.baud_rate = baud_rate
-        self.command_lock = asyncio.Lock()  # Add lock for sequential execution
+        self.timeout = timeout
+        self.command_lock = asyncio.Lock()
+        self.connect()
+
+    def connect(self):
+        """Establish connection to the Bluetooth device"""
         try:
-            self.bt = serial.Serial(port=bluetooth_port, baudrate=baud_rate, timeout=timeout)
-            logger.info(f"Connected to {bluetooth_port} at {baud_rate} baud.")
+            if hasattr(self, 'bt') and self.bt is not None:
+                self.bt.close()
+                time.sleep(0.5)  # Wait for port to fully close
+                
+            self.bt = serial.Serial(
+                port=self.bluetooth_port,
+                baudrate=self.baud_rate,
+                timeout=2,        # Increased from 1 to 2
+                write_timeout=2,  # Increased from 1 to 2
+                xonxoff=True,    # Enable software flow control
+                rtscts=False,    # Disable hardware flow control
+                dsrdtr=False,    # Disable hardware flow control
+                inter_byte_timeout=1  # Add timeout between bytes
+            )
+            # Attempt to reset the device
+            self.bt.reset_input_buffer()
+            self.bt.reset_output_buffer()
+            time.sleep(1)  # Wait for connection to stabilize
+            logger.info(f"Connected to {self.bluetooth_port} at {self.baud_rate} baud.")
+            return True
         except serial.SerialException as e:
             logger.error(f"Could not connect to Bluetooth device: {e}")
             self.bt = None
+            return False
 
-    async def send_command(self, command):
-        if self.bt is None:
+    def send_command(self, command: str):
+        """Send command with automatic reconnection attempt on failure"""
+        if self.bt is None and not self.connect():
             logger.error("Bluetooth connection not established.")
-            return
-        async with self.command_lock:  # Use lock to ensure sequential execution
-            self.bt.write(command.encode())
-            logger.debug(f"Sent command: {command}")
-            await asyncio.sleep(0.01)  # Small delay between commands
-
-    async def execute_sequence(self, commands):
-        """Execute a sequence of commands in order"""
-        for cmd, args in commands:
-            await getattr(self, cmd)(*args)
-            await asyncio.sleep(0.1)  # Small delay between commands
-
-    def _extract_value(self, period):
-        """Helper method to extract value from MapComposite or similar objects."""
-        logger.debug(f"Extracting value from period: {type(period)}")
-        
+            return False
+            
         try:
-            # If it's already a number or numeric string, convert and return it
-            if isinstance(period, (int, float)):
-                return float(period)
-            if isinstance(period, str):
-                # First try direct conversion
-                try:
-                    return float(period)
-                except ValueError:
-                    # Extract numbers from the string if direct conversion fails
-                    import re
-                    numbers = re.findall(r'\d*\.?\d+', period)
-                    if numbers:
-                        return float(numbers[0])
-            
-            # Handle various object types that might contain the value
-            for attr in ["content", "value", "result"]:
-                if hasattr(period, attr):
-                    val = getattr(period, attr)
-                    if val is not None:
-                        return self._extract_value(val)
-            
-            # Handle dictionary case
-            if isinstance(period, dict):
-                for key in ["value", "content", "result"]:
-                    if key in period:
-                        return self._extract_value(period[key])
-            
-            raise ValueError("Could not extract a valid number")
-            
-        except Exception as e:
-            logger.error(f"Value extraction failed: {str(e)}")
-            if hasattr(period, "__dict__"):
-                logger.debug(f"Period object attributes: {period.__dict__}")
-            return 1.0  # Return a default value of 1.0 instead of 0.0
+            # Add a small delay between commands
+            time.sleep(0.02)
+            self.bt.write(command.encode())
+            self.bt.flush()  # Ensure data is written
+            logger.debug(f"Sent command: {command}")
+            return True
+        except (serial.SerialTimeoutException, serial.SerialException) as e:
+            logger.error(f"Failed to send command: {command}, error: {e}")
+            if "timeout" in str(e).lower() or "input/output error" in str(e).lower():
+                logger.info("Attempting to reconnect...")
+                if self.connect():
+                    try:
+                        self.bt.write(command.encode())
+                        self.bt.flush()
+                        logger.debug(f"Sent command after reconnection: {command}")
+                        return True
+                    except serial.SerialException as e2:
+                        logger.error(f"Failed to send command after reconnection: {e2}")
+            return False
+    
 
     @kernel_function(
         name="move_forward",
         description="Move the car forward for a specified time period",
     )
-    async def forward(self, period: str) -> str:
+    def forward(self, period: str) -> str:
         """Move forward for a specified period."""
         logger.info("Moving forward")
         try:
@@ -85,9 +82,17 @@ class RemoteController:
             logger.debug(f"Moving forward for: {period_float} seconds")
             
             start_time = time.time()
+            command_interval = 0.1  # Send command every 100ms
+            last_command_time = 0
+            
             while (time.time() - start_time) < period_float:
-                await self.send_command('U')
-            await self.stop()
+                current_time = time.time()
+                if current_time - last_command_time >= command_interval:
+                    self.send_command('U')
+                    last_command_time = current_time
+                time.sleep(0.01)  # Small sleep to prevent CPU hogging
+            
+            self.stop()
             logger.info("Stopped moving forward")
             return 'Moving forward complete'
         except ValueError as e:
@@ -99,7 +104,7 @@ class RemoteController:
         name="move_backward",
         description="Move the car backward for a specified time period",
     )
-    async def backward(self, period: str) -> str:
+    def backward(self, period: str) -> str:
         """Move backward for a specified period."""
         logger.info("Moving backward")
         try:
@@ -107,9 +112,17 @@ class RemoteController:
             logger.debug(f"Moving backward for: {period_float} seconds")
             
             start_time = time.time()
+            command_interval = 0.1  # Send command every 100ms
+            last_command_time = 0
+            
             while (time.time() - start_time) < period_float:
-                await self.send_command('D')
-            await self.stop()
+                current_time = time.time()
+                if current_time - last_command_time >= command_interval:
+                    self.send_command('D')
+                    last_command_time = current_time
+                time.sleep(0.01)  # Small sleep to prevent CPU hogging
+            
+            self.stop()
             logger.info("Stopped moving backward")
             return 'Moving backward complete'
         except ValueError as e:
@@ -121,7 +134,7 @@ class RemoteController:
         name="turn_left",
         description="Turn the car left for a specified time period",
     )
-    async def left(self, period: str) -> str:
+    def left(self, period: str) -> str:
         """Turn left for a specified period."""
         logger.info("Turning left")
         try:
@@ -129,9 +142,17 @@ class RemoteController:
             logger.debug(f"Turning left for: {period_float} seconds")
             
             start_time = time.time()
+            command_interval = 0.1  # Send command every 100ms
+            last_command_time = 0
+            
             while (time.time() - start_time) < period_float:
-                await self.send_command('L')
-            await self.stop()
+                current_time = time.time()
+                if current_time - last_command_time >= command_interval:
+                    self.send_command('L')
+                    last_command_time = current_time
+                time.sleep(0.01)  # Small sleep to prevent CPU hogging
+            
+            self.stop()
             logger.info("Stopped turning left")
             return 'Turning left complete'
         except ValueError as e:
@@ -143,7 +164,7 @@ class RemoteController:
         name="turn_right", 
         description="Turn the car right for a specified time period",
     )
-    async def right(self, period: str) -> str:
+    def right(self, period: str) -> str:
         """Turn right for a specified period."""
         logger.info("Turning right")
         try:
@@ -151,9 +172,17 @@ class RemoteController:
             logger.debug(f"Turning right for: {period_float} seconds")
             
             start_time = time.time()
+            command_interval = 0.1  # Send command every 100ms
+            last_command_time = 0
+            
             while (time.time() - start_time) < period_float:
-                await self.send_command('R')
-            await self.stop()
+                current_time = time.time()
+                if current_time - last_command_time >= command_interval:
+                    self.send_command('R')
+                    last_command_time = current_time
+                time.sleep(0.01)  # Small sleep to prevent CPU hogging
+            
+            self.stop()
             logger.info("Stopped turning right")
             return 'Turning right complete'
         except ValueError as e:
@@ -165,10 +194,10 @@ class RemoteController:
         name="stop_car",
         description="Stop all car movement immediately",
     )
-    async def stop(self) -> str:
+    def stop(self) -> str:
         """Stop the car."""
         logger.info("Stopping")
-        await self.send_command('X')
+        self.send_command('X')
         logger.info("Stopped")
         return 'Stop complete'
 
@@ -176,7 +205,7 @@ class RemoteController:
         name="set_car_speed",
         description="Set the speed of the car (value between 0-9)",
     )
-    async def set_speed(self, speed: str) -> str:
+    def set_speed(self, speed: str) -> str:
         """Set the speed of the car."""
         try:
             speed_int = int(speed)
@@ -184,7 +213,7 @@ class RemoteController:
                 logger.error("Speed must be an integer between 0 and 9.")
                 return "Error: Speed must be between 0 and 9"
             logger.info(f"Setting speed to {speed_int}")
-            await self.send_command(str(speed_int))
+            self.send_command(str(speed_int))
             logger.info("Speed set")
             return f'Speed set to {speed_int}'
         except ValueError as e:

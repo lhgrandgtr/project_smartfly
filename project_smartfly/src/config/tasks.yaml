@@ -1,0 +1,13 @@
+navigation_task:
+  description: >
+    Analyze the frame for obstacles and navigate to the next waypoint. You have to estimate the amount of time according to how far the waypoint is and how much you want to turn to reach it.
+  expected_output: >
+    A list of directions like go forward for 5 seconds, turn left for 0.5 seconds.
+  agent: vision_navigator
+
+control_task:
+  description: >
+    Control the car based on the navigation task. You have to adjust the speed and direction of the car according to the navigation task.
+  expected_output: >
+    Control commands like accelerate, brake, turn left, turn right.
+  agent: car_controller

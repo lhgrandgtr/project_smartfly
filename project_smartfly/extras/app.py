@@ -79,6 +79,7 @@ async def main():
             response = await chat_completion.get_chat_message_content(
                 chat_history=history,
                 settings=execution_settings,
+                kernel=kernel
             )
             
             # Execute navigation command if any
